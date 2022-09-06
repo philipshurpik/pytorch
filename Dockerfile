@@ -1,95 +1,51 @@
-# syntax = docker/dockerfile:experimental
-#
-# NOTE: To build this you will need a docker version > 18.06 with
-#       experimental enabled and DOCKER_BUILDKIT=1
-#
-#       If you do not use buildkit you are not going to have a good time
-#
-#       For reference:
-#           https://docs.docker.com/develop/develop-images/build_enhancements/
-ARG BASE_IMAGE=ubuntu:18.04
-ARG PYTHON_VERSION=3.8
+FROM nvidia/cuda:11.6.0-cudnn8-runtime-ubuntu20.04
 
-FROM ${BASE_IMAGE} as dev-base
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential \
-        ca-certificates \
-        ccache \
-        cmake \
-        curl \
-        git \
-        libjpeg-dev \
-        libpng-dev && \
+ENV TZ=Europe/Kiev
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+RUN apt-get update \
+    && apt-get install -y build-essential \
+    && apt-get install -y ca-certificates \
+    && apt-get install -y ccache \
+    && apt-get install -y cmake \
+    && apt-get install -y curl \
+    && apt-get install -y file \
+    && apt-get install -y sudo \
+    && apt-get install -y git \
+    && apt-get install -y wget \
+    && apt-get install -y locales
+
+# Install base utilities
+RUN apt-get clean && \
     rm -rf /var/lib/apt/lists/*
-RUN /usr/sbin/update-ccache-symlinks
-RUN mkdir /opt/ccache && ccache --set-config=cache_dir=/opt/ccache
-ENV PATH /opt/conda/bin:$PATH
 
-FROM dev-base as conda
-ARG PYTHON_VERSION=3.8
-# Automatically set by buildx
-ARG TARGETPLATFORM
-# translating Docker's TARGETPLATFORM into miniconda arches
-RUN case ${TARGETPLATFORM} in \
-         "linux/arm64")  MINICONDA_ARCH=aarch64  ;; \
-         *)              MINICONDA_ARCH=x86_64   ;; \
-    esac && \
-    curl -fsSL -v -o ~/miniconda.sh -O  "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-${MINICONDA_ARCH}.sh"
-COPY requirements.txt .
-RUN chmod +x ~/miniconda.sh && \
-    ~/miniconda.sh -b -p /opt/conda && \
-    rm ~/miniconda.sh && \
-    /opt/conda/bin/conda install -y python=${PYTHON_VERSION} cmake conda-build pyyaml numpy ipython && \
-    /opt/conda/bin/python -mpip install -r requirements.txt && \
-    /opt/conda/bin/conda clean -ya
+# Install miniconda
+ENV CONDA_DIR /opt/conda
+RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh && \
+     /bin/bash ~/miniconda.sh -b -p /opt/conda
 
-FROM dev-base as submodule-update
-WORKDIR /opt/pytorch
-COPY . .
+# Put conda in path so we can use conda activate
+ENV PATH=$CONDA_DIR/bin:$PATH
+
+RUN conda install astunparse numpy ninja pyyaml setuptools cmake cffi typing_extensions future six requests dataclasses
+RUN conda install mkl mkl-include
+RUN conda install -c pytorch magma-cuda116  # or the magma-cuda* that matches your CUDA version from https://anaconda.org/pytorch/repo
+
+
+# install torch from source
+RUN git clone --recursive https://github.com/pytorch/pytorch
+WORKDIR pytorch
+RUN git submodule sync
 RUN git submodule update --init --recursive --jobs 0
 
-FROM conda as build
-WORKDIR /opt/pytorch
-COPY --from=conda /opt/conda /opt/conda
-COPY --from=submodule-update /opt/pytorch /opt/pytorch
-RUN --mount=type=cache,target=/opt/ccache \
-    TORCH_CUDA_ARCH_LIST="3.5 5.2 6.0 6.1 7.0+PTX 8.0" TORCH_NVCC_FLAGS="-Xfatbin -compress-all" \
-    CMAKE_PREFIX_PATH="$(dirname $(which conda))/../" \
-    python setup.py install
+ENV PYTORCH_BUILD_VERSION=1.13.0
+ENV PYTORCH_BUILD_NUMBER=1
+ENV USE_CUDA=1 USE_CUDNN=1
+ENV TORCH_CUDA_ARCH_LIST="8.0" TORCH_NVCC_FLAGS="-Xfatbin -compress-all"
+ENV CMAKE_PREFIX_PATH="$(dirname $(which conda))/../"
+ENV MAX_JOBS=8
+RUN python setup.py clean \
+    && python setup.py install
 
-FROM conda as conda-installs
-ARG PYTHON_VERSION=3.8
-ARG CUDA_VERSION=11.3
-ARG CUDA_CHANNEL=nvidia
-ARG INSTALL_CHANNEL=pytorch-nightly
-ENV CONDA_OVERRIDE_CUDA=${CUDA_VERSION}
-# Automatically set by buildx
-RUN /opt/conda/bin/conda install -c "${INSTALL_CHANNEL}" -y python=${PYTHON_VERSION}
-ARG TARGETPLATFORM
-# On arm64 we can only install wheel packages
-RUN case ${TARGETPLATFORM} in \
-         "linux/arm64")  pip install --extra-index-url https://download.pytorch.org/whl/cpu/ torch torchvision torchtext ;; \
-         *)              /opt/conda/bin/conda install -c "${INSTALL_CHANNEL}" -c "${CUDA_CHANNEL}" -y "python=${PYTHON_VERSION}" pytorch torchvision torchtext "cudatoolkit=${CUDA_VERSION}"  ;; \
-    esac && \
-    /opt/conda/bin/conda clean -ya
-RUN /opt/conda/bin/pip install torchelastic
+WORKDIR /home/work/
 
-FROM ${BASE_IMAGE} as official
-ARG PYTORCH_VERSION
-LABEL com.nvidia.volumes.needed="nvidia_driver"
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        libjpeg-dev \
-        libpng-dev && \
-    rm -rf /var/lib/apt/lists/*
-COPY --from=conda-installs /opt/conda /opt/conda
-ENV PATH /opt/conda/bin:$PATH
-ENV NVIDIA_VISIBLE_DEVICES all
-ENV NVIDIA_DRIVER_CAPABILITIES compute,utility
-ENV LD_LIBRARY_PATH /usr/local/nvidia/lib:/usr/local/nvidia/lib64
-ENV PYTORCH_VERSION ${PYTORCH_VERSION}
-WORKDIR /workspace
-
-FROM official as dev
-# Should override the already installed version from the official-image stage
-COPY --from=build /opt/conda /opt/conda
+CMD ["jupyter-lab", "--ip=0.0.0.0","--port=8888" ,"--no-browser", "--allow-root", "--LabApp.token=''"]
