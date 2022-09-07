@@ -42,6 +42,7 @@ RUN git submodule update --init --recursive --jobs 0
 ENV PYTORCH_BUILD_VERSION=1.13.0
 ENV PYTORCH_BUILD_NUMBER=1
 ENV USE_CUDA=1 USE_CUDNN=1
+# exact versions can be selected from here: TORCH_CUDA_ARCH_LIST="3.5 5.2 6.0 6.1 7.0+PTX 8.0"
 ENV TORCH_CUDA_ARCH_LIST="8.0" TORCH_NVCC_FLAGS="-Xfatbin -compress-all"
 ENV CMAKE_PREFIX_PATH="$(dirname $(which conda))/../"
 ENV MAX_JOBS=16
