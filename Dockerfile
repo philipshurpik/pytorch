@@ -1,5 +1,7 @@
 FROM nvidia/cuda:11.6.0-cudnn8-runtime-ubuntu20.04
 
+# works with cuda 11.6, for other cuda replace initial docker to 11.3.0 and corresponding magma-cuda113, whl/cu113
+
 ENV TZ=Europe/Kiev
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 RUN apt-get update \
@@ -42,10 +44,14 @@ ENV PYTORCH_BUILD_NUMBER=1
 ENV USE_CUDA=1 USE_CUDNN=1
 ENV TORCH_CUDA_ARCH_LIST="8.0" TORCH_NVCC_FLAGS="-Xfatbin -compress-all"
 ENV CMAKE_PREFIX_PATH="$(dirname $(which conda))/../"
-ENV MAX_JOBS=8
+ENV MAX_JOBS=16
 RUN python setup.py clean \
     && python setup.py install
 
-WORKDIR /home/work/
+RUN pip3 install torchvision --extra-index-url https://download.pytorch.org/whl/cu116 --no-deps
 
-CMD ["jupyter-lab", "--ip=0.0.0.0","--port=8888" ,"--no-browser", "--allow-root", "--LabApp.token=''"]
+# Build command:
+# DOCKER_BUILDKIT=1 docker build --tag torch_latest .
+
+# Usage as base image in other Dockerfiles:
+# FROM torch_latest:latest
